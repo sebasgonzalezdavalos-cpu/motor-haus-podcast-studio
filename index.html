@@ -663,8 +663,9 @@
 
       <div class="player-row">
         <button class="play-circle" id="btnPlayPause" disabled>▶</button>
-        <div style="flex: 1; min-width: 0;">
-          <canvas id="waveformCanvas" width="700" height="72"></canvas>
+        <div style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px;">
+          <canvas id="waveformCanvas" width="700" height="64"></canvas>
+          <input type="range" id="seekSlider" min="0" max="1000" step="1" value="0" style="width: 100%; height: 6px; cursor: grab;" />
         </div>
         <div class="time-badge" id="timeReadout">00:00 / 00:00</div>
       </div>
@@ -874,15 +875,18 @@
       computePeaks(data.playable_url, true);
 
       if (hasEnhanced) {
-        enhAudio.src = data.mastered_url;
+        const playEnhUrl = data.mastered_mp3_url || data.mastered_url;
+        enhAudio.src = playEnhUrl;
         enhAudio.load();
-        computePeaks(data.mastered_url, false);
+        computePeaks(playEnhUrl, false);
         showDownloads(data);
         setListeningMode("enh");
+        document.getElementById("timeReadout").textContent = `00:00 / ${formatTime(currentDuration)}`;
         document.getElementById("statusSubtitle").innerHTML =
           `✅ <b>Pro Studio Master Active!</b> Click <b>📱 Original Phone</b> vs <b>🎙️ Pro Studio</b> to compare.`;
       } else {
         document.getElementById("downloadGrid").classList.remove("ready");
+        document.getElementById("timeReadout").textContent = `00:00 / ${formatTime(currentDuration)}`;
         setListeningMode("orig");
       }
     }
@@ -1121,8 +1125,11 @@
         return;
       }
 
-      const dur = origAudio.duration || currentDuration || 1;
-      const progress = Math.min(1, Math.max(0, origAudio.currentTime / dur));
+      const dur = origAudio.duration || enhAudio.duration || currentDuration || 1;
+      const cur = (listeningMode === "enh" && hasEnhanced && enhAudio.currentTime > 0)
+        ? enhAudio.currentTime
+        : origAudio.currentTime;
+      const progress = Math.min(1, Math.max(0, cur / dur));
       const barW = w / peaks.length;
 
       for (let i = 0; i < peaks.length; i++) {
@@ -1137,13 +1144,38 @@
         }
         ctx.fillRect(x + 1, y, Math.max(1.5, barW - 1.5), barH);
       }
+
+      // Draw bright playhead line
+      const px = Math.max(2, Math.min(w - 2, progress * w));
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(px - 1, 0, 2.5, h);
+    }
+
+    let isDraggingSeek = false;
+
+    function seekToFraction(pct) {
+      const dur = origAudio.duration || enhAudio.duration || currentDuration;
+      if (!dur) return;
+      const clamped = Math.max(0, Math.min(1, pct));
+      const targetTime = clamped * dur;
+      try { origAudio.currentTime = targetTime; } catch (_) {}
+      if (hasEnhanced) {
+        try { enhAudio.currentTime = targetTime; } catch (_) {}
+      }
+      document.getElementById("seekSlider").value = Math.round(clamped * 1000);
+      document.getElementById("timeReadout").textContent = `${formatTime(targetTime)} / ${formatTime(dur)}`;
+      drawWaveform();
     }
 
     function tick() {
       requestAnimationFrame(tick);
-      if (!origAudio.paused) {
-        const dur = origAudio.duration || currentDuration || 0;
-        document.getElementById("timeReadout").textContent = `${formatTime(origAudio.currentTime)} / ${formatTime(dur)}`;
+      if (!origAudio.paused || !enhAudio.paused) {
+        const dur = origAudio.duration || enhAudio.duration || currentDuration || 0;
+        const cur = (listeningMode === "enh" && hasEnhanced) ? enhAudio.currentTime : origAudio.currentTime;
+        document.getElementById("timeReadout").textContent = `${formatTime(cur)} / ${formatTime(dur)}`;
+        if (!isDraggingSeek && dur > 0) {
+          document.getElementById("seekSlider").value = Math.round((cur / dur) * 1000);
+        }
         drawWaveform();
       }
     }
@@ -1169,15 +1201,33 @@
     document.getElementById("btnModeOrig").onclick = () => setListeningMode("orig");
     document.getElementById("btnModeEnh").onclick = () => setListeningMode("enh");
 
-    document.getElementById("waveformCanvas").onclick = (e) => {
-      const dur = origAudio.duration || currentDuration;
-      if (!dur) return;
-      const rect = e.target.getBoundingClientRect();
-      const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-      origAudio.currentTime = pct * dur;
-      if (hasEnhanced) enhAudio.currentTime = origAudio.currentTime;
-      drawWaveform();
-    };
+    const wfCanvas = document.getElementById("waveformCanvas");
+    wfCanvas.addEventListener("pointerdown", (e) => {
+      isDraggingSeek = true;
+      wfCanvas.setPointerCapture(e.pointerId);
+      const rect = wfCanvas.getBoundingClientRect();
+      seekToFraction((e.clientX - rect.left) / rect.width);
+    });
+    wfCanvas.addEventListener("pointermove", (e) => {
+      if (!isDraggingSeek) return;
+      const rect = wfCanvas.getBoundingClientRect();
+      seekToFraction((e.clientX - rect.left) / rect.width);
+    });
+    wfCanvas.addEventListener("pointerup", (e) => {
+      if (!isDraggingSeek) return;
+      isDraggingSeek = false;
+      wfCanvas.releasePointerCapture(e.pointerId);
+    });
+
+    const seekSlider = document.getElementById("seekSlider");
+    seekSlider.addEventListener("input", () => {
+      isDraggingSeek = true;
+      seekToFraction(Number(seekSlider.value) / 1000);
+    });
+    seekSlider.addEventListener("change", () => {
+      seekToFraction(Number(seekSlider.value) / 1000);
+      isDraggingSeek = false;
+    });
 
     window.addEventListener("keydown", (e) => {
       if (e.target.tagName === "INPUT") return;
